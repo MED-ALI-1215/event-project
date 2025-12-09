@@ -1,0 +1,12 @@
+tn/fst/eventsproject/repositories/EventRepository.class
+tn/fst/eventsproject/entities/Tache.class
+tn/fst/eventsproject/repositories/LogisticsRepository.class
+tn/fst/eventsproject/config/PerformanceAspect.class
+tn/fst/eventsproject/entities/Event.class
+tn/fst/eventsproject/EventsProjectApplication.class
+tn/fst/eventsproject/entities/Participant.class
+tn/fst/eventsproject/services/EventServicesImpl.class
+tn/fst/eventsproject/controllers/EventRestController.class
+tn/fst/eventsproject/entities/Logistics.class
+tn/fst/eventsproject/services/IEventServices.class
+tn/fst/eventsproject/repositories/ParticipantRepository.class
