@@ -2,8 +2,8 @@ pipeline {
     agent any
     
     tools {
-        maven 'Maven'  // Doit correspondre au nom dans Jenkins → Global Tool Configuration
-        jdk 'JDK17'    // Doit correspondre au nom dans Jenkins
+        maven 'Maven'
+        jdk 'JDK17'
     }
     
     options {
@@ -42,13 +42,19 @@ pipeline {
         
         stage('SonarQube Analysis') {
             steps {
-                script {
-                    // Vérifiez si SonarQube est configuré
-                    echo "SonarQube analysis would run here"
-                    // Décommentez quand SonarQube est configuré :
-                    // withSonarQubeEnv('SonarQube') {
-                    //     sh './mvnw sonar:sonar -Dsonar.projectKey=events-project'
-                    // }
+                withSonarQubeEnv('SonarQube') {
+                    sh './mvnw sonar:sonar \
+                        -Dsonar.projectKey=events-project \
+                        -Dsonar.projectName="Events Project" \
+                        -Dsonar.java.binaries=target/classes'
+                }
+            }
+        }
+        
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
                 }
             }
         }
@@ -73,14 +79,11 @@ pipeline {
         stage('Docker Test') {
             steps {
                 script {
-                    // Arrêtez l'ancien conteneur si existant
                     sh 'docker stop events-test-${BUILD_NUMBER} || true'
                     sh 'docker rm events-test-${BUILD_NUMBER} || true'
                     
-                    // Lancez le conteneur de test
                     sh 'docker run -d --name events-test-${BUILD_NUMBER} -p 809${BUILD_NUMBER}:8080 events-project:${BUILD_NUMBER}'
                     
-                    // Attendez et testez
                     sleep 30
                     sh '''
                         if curl -s http://localhost:809${BUILD_NUMBER}/events/actuator/health > /dev/null; then
@@ -101,16 +104,6 @@ pipeline {
             }
         }
         
-        stage('Deploy to Nexus') {
-            steps {
-                script {
-                    echo "Deploying artifact to Nexus..."
-                    // Décommentez quand Nexus est configuré :
-                    // sh './mvnw deploy -DskipTests'
-                }
-            }
-        }
-        
         stage('Cleanup') {
             steps {
                 sh 'docker system prune -f'
@@ -122,22 +115,9 @@ pipeline {
     post {
         success {
             echo '🎉 Pipeline completed successfully!'
-            emailext (
-                subject: "✅ Pipeline Success: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                body: "The pipeline ${env.JOB_NAME} #${env.BUILD_NUMBER} completed successfully.\n\nCheck: ${env.BUILD_URL}",
-                to: 'user@example.com'
-            )
         }
         failure {
             echo '❌ Pipeline failed!'
-            emailext (
-                subject: "❌ Pipeline Failed: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                body: "The pipeline ${env.JOB_NAME} #${env.BUILD_NUMBER} failed.\n\nCheck: ${env.BUILD_URL}",
-                to: 'user@example.com'
-            )
-        }
-        unstable {
-            echo 'Pipeline marked as unstable'
         }
         always {
             echo 'Pipeline completed'
