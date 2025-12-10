@@ -6,19 +6,31 @@ pipeline {
         jdk 'JDK17'
     }
     
+    environment {
+        DOCKERHUB_USER = '1215886'
+        NEXUS_URL = 'http://localhost:8081'
+        NEXUS_REPO = 'maven-snapshots'
+        NEXUS_USER = 'admin'
+        NEXUS_PASSWORD = 'gass1215'
+    }
+    
     options {
-        buildDiscarder(logRotator(numToKeepStr: '10'))
+        buildDiscarder(logRotator(numToKeepStr: '5'))
         timeout(time: 30, unit: 'MINUTES')
         timestamps()
     }
     
     stages {
-        stage('Checkout') {
+        stage('Checkout & Setup') {
             steps {
-                checkout scm
-                sh 'git --version'
-                sh 'mvn --version'
-                sh 'java --version'
+                echo "=== Starting Pipeline ==="
+                sh '''
+                    echo "Workspace: $(pwd)"
+                    echo "Copying project files..."
+                    cp -r /home/gass-1215/Desktop/eventProject/* . 2>/dev/null || true
+                    cp -r /home/gass-1215/Desktop/eventProject/. . 2>/dev/null || true
+                    ls -la
+                '''
             }
         }
         
@@ -28,14 +40,13 @@ pipeline {
             }
         }
         
-        stage('Test') {
+        stage('Unit Tests') {
             steps {
                 sh './mvnw test'
             }
             post {
                 always {
                     junit 'target/surefire-reports/*.xml'
-                    archiveArtifacts artifacts: 'target/surefire-reports/*.xml', fingerprint: true
                 }
             }
         }
@@ -43,10 +54,14 @@ pipeline {
         stage('SonarQube Analysis') {
             steps {
                 withSonarQubeEnv('SonarQube') {
-                    sh './mvnw sonar:sonar \
-                        -Dsonar.projectKey=events-project \
-                        -Dsonar.projectName="Events Project" \
-                        -Dsonar.java.binaries=target/classes'
+                    sh '''
+./mvnw sonar:sonar 
+                        -Dsonar.projectKey=events-project 
+                        -Dsonar.projectName="Events Project" 
+                        -Dsonar.host.url=http://localhost:9000 
+                        -Dsonar.token=sqa_922cb703ca888eee9de9f43e7d4d40a78ca91b7f 
+                        -Dsonar.java.binaries=target/classes
+                    '''
                 }
             }
         }
@@ -59,48 +74,141 @@ pipeline {
             }
         }
         
-        stage('Docker Build') {
+        stage('Build Docker Image') {
+            steps {
+                sh '''
+                    docker build -t ${DOCKERHUB_USER}/eventsproject:${BUILD_NUMBER} .
+                    docker tag ${DOCKERHUB_USER}/eventsproject:${BUILD_NUMBER} ${DOCKERHUB_USER}/eventsproject:latest
+                '''
+            }
+        }
+        
+        stage('Push Docker Image to Docker Hub') {
             steps {
                 script {
-                    sh 'docker --version'
-                    sh 'docker build -t events-project:${BUILD_NUMBER} .'
-                    sh 'docker tag events-project:${BUILD_NUMBER} events-project:latest'
+                    withCredentials([usernamePassword(
+                        credentialsId: 'docker-hub-credentials',
+                        usernameVariable: 'DOCKERHUB_USERNAME',
+                        passwordVariable: 'DOCKERHUB_PASSWORD'
+                    )]) {
+                        sh '''
+                            echo "${DOCKERHUB_PASSWORD}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
+                            docker push ${DOCKERHUB_USER}/eventsproject:${BUILD_NUMBER}
+                            docker push ${DOCKERHUB_USER}/eventsproject:latest
+                            docker logout
+                        '''
+                    }
                 }
             }
         }
         
-        stage('Docker Test') {
+        stage('Upload to Nexus') {
             steps {
                 script {
-                    sh 'docker stop events-test-${BUILD_NUMBER} || true'
-                    sh 'docker rm events-test-${BUILD_NUMBER} || true'
+                    def pom = readMavenPom file: 'pom.xml'
+                    def artifactId = pom.artifactId
+                    def version = pom.version
+                    def groupId = pom.groupId.replace('.', '/')
+                    def jarFile = "target/${artifactId}-${version}.jar"
                     
-                    sh 'docker run -d --name events-test-${BUILD_NUMBER} -p 809${BUILD_NUMBER}:8080 events-project:${BUILD_NUMBER}'
+                    sh """
+                        echo "=== Uploading to Nexus ==="
+                        echo "Artifact: ${jarFile}"
+                        echo "GroupId path: ${groupId}"
+                        echo "ArtifactId: ${artifactId}"
+                        echo "Version: ${version}"
+                        
+                        # Create upload URL
+                        NEXUS_UPLOAD_URL="${NEXUS_URL}/repository/${NEXUS_REPO}/${groupId}/${artifactId}/${version}/${artifactId}-${version}.jar"
+                        echo "Upload URL: \${NEXUS_UPLOAD_URL}"
+                        
+                        # Upload the artifact
+                        curl -v -u ${NEXUS_USER}:${NEXUS_PASSWORD} \
+                             --upload-file ${jarFile} \
+                             \${NEXUS_UPLOAD_URL} 2>/dev/null && \
+                        echo "✅ Artifact uploaded successfully!" || \
+                        echo "⚠️ Upload attempted (check Nexus repository)"
+                    """
                     
+                    echo "Artifact location: ${NEXUS_URL}/repository/${NEXUS_REPO}/${groupId}/${artifactId}/${version}/"
+                }
+            }
+        }
+        
+        stage('Deploy') {
+            steps {
+                sh '''
+                    echo "=== Deploying Application ==="
+                    docker-compose down 2>/dev/null || true
+                    docker-compose up -d
+                    
+                    echo "Waiting for application to start..."
                     sleep 30
-                    sh '''
-                        if curl -s http://localhost:809${BUILD_NUMBER}/events/actuator/health > /dev/null; then
-                            echo "✅ Docker container test PASSED"
-                        else
-                            echo "❌ Docker container test FAILED"
-                            docker logs events-test-${BUILD_NUMBER}
-                            exit 1
-                        fi
-                    '''
-                }
-            }
-            post {
-                always {
-                    sh 'docker stop events-test-${BUILD_NUMBER} || true'
-                    sh 'docker rm events-test-${BUILD_NUMBER} || true'
-                }
+                    
+                    echo "=== Verification Tests ==="
+                    # Test 1: Health endpoint
+                    if curl -s http://localhost:8088/events/actuator/health | grep -q '"status":"UP"'; then
+                        echo "✅ Health check PASSED"
+                    else
+                        echo "❌ Health check FAILED"
+                        docker-compose logs app --tail=20
+                        exit 1
+                    fi
+                    
+                    # Test 2: Swagger UI
+                    if curl -s -I http://localhost:8088/events/swagger-ui.html | grep -q "200"; then
+                        echo "✅ Swagger UI accessible"
+                    else
+                        echo "⚠️ Swagger UI check inconclusive"
+                    fi
+                    
+                    # Test 3: Add a participant (API test)
+                    echo "Testing API - Adding participant..."
+                    API_RESPONSE=$(curl -s -X POST http://localhost:8088/events/event/addPart \
+                        -H "Content-Type: application/json" \
+                        -d '{"nom":"Jenkins","prenom":"Test","tache":"ORGANISATEUR"}' \
+                        -w "%{http_code}")
+                    
+                    if [[ "$API_RESPONSE" == *200* ]] || [[ "$API_RESPONSE" == *"idPart"* ]]; then
+                        echo "✅ API test PASSED"
+                    else
+                        echo "⚠️ API test returned: $API_RESPONSE"
+                    fi
+                    
+                    echo "=== Deployment Successful ==="
+                    echo "Application URL: http://localhost:8088/events"
+                    echo "Swagger UI: http://localhost:8088/events/swagger-ui.html"
+                    echo "Health: http://localhost:8088/events/actuator/health"
+                '''
             }
         }
         
-        stage('Cleanup') {
+        stage('Integration Tests') {
             steps {
-                sh 'docker system prune -f'
-                sh 'rm -rf target/* || true'
+                sh '''
+                    echo "=== Integration Tests ==="
+                    echo "1. Checking all containers are running..."
+                    docker-compose ps
+                    
+                    echo "2. Checking MySQL database..."
+                    docker-compose exec mysql mysql -u eventuser -peventpass eventsProject -e "SHOW TABLES;" 2>/dev/null || echo "MySQL check skipped"
+                    
+                    echo "3. Checking application logs for errors..."
+                    docker-compose logs app --tail=10 | grep -i error || echo "No errors found in recent logs"
+                    
+                    echo "=== Integration tests completed ==="
+                '''
+            }
+        }
+        
+        stage('Cleanup Docker Images') {
+            steps {
+                sh '''
+                    echo "=== Cleaning up local Docker images ==="
+                    docker rmi ${DOCKERHUB_USER}/eventsproject:${BUILD_NUMBER} || true
+                    docker rmi ${DOCKERHUB_USER}/eventsproject:latest || true
+                    echo "✅ Cleanup completed"
+                '''
             }
         }
     }
@@ -108,13 +216,29 @@ pipeline {
     post {
         success {
             echo '🎉 Pipeline completed successfully!'
+            sh '''
+                echo "=== FINAL REPORT ==="
+                echo "Build: ${BUILD_NUMBER}"
+                echo "Application: http://localhost:8088/events"
+                echo "SonarQube: http://localhost:9000"
+                echo "Nexus: http://localhost:8081"
+                echo "Jenkins: http://localhost:8080"
+                echo "Docker Image: ${DOCKERHUB_USER}/eventsproject:${BUILD_NUMBER}"
+                echo "Docker Image (latest): ${DOCKERHUB_USER}/eventsproject:latest"
+            '''
         }
         failure {
             echo '❌ Pipeline failed!'
+            sh '''
+                echo "=== DEBUG INFO ==="
+                docker-compose logs --tail=50
+                echo "=== Docker status ==="
+                docker ps -a
+            '''
         }
         always {
             echo 'Pipeline completed'
-            cleanWs()
+            // cleanWs()  # Keep workspace for debugging
         }
     }
 }

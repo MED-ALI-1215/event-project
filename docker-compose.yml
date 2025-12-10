@@ -9,7 +9,7 @@ services:
       MYSQL_USER: eventuser
       MYSQL_PASSWORD: eventpass
     ports:
-      - "3306:3306"
+      - "3307:3306"
     volumes:
       - mysql_data:/var/lib/mysql
     networks:
@@ -31,7 +31,7 @@ services:
       SPRING_DATASOURCE_PASSWORD: eventpass
       SPRING_JPA_HIBERNATE_DDL_AUTO: update
     ports:
-      - "8080:8080"
+      - "8088:8080"
     networks:
       - event-network
 

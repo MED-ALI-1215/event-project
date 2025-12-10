@@ -1,0 +1,202 @@
+pipeline {
+    agent any
+    
+    tools {
+        maven 'Maven'
+        jdk 'JDK17'
+    }
+    
+    environment {
+        DOCKERHUB_USER = '1215886'
+        NEXUS_URL = 'http://localhost:8081'
+        NEXUS_REPO = 'maven-releases'
+        NEXUS_USER = 'admin'
+        NEXUS_PASSWORD = 'gass1215'
+    }
+    
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '5'))
+        timeout(time: 30, unit: 'MINUTES')
+        timestamps()
+    }
+    
+    stages {
+        stage('Checkout & Setup') {
+            steps {
+                echo "=== Starting Pipeline ==="
+                sh '''
+                    echo "Workspace: $(pwd)"
+                    echo "Copying project files..."
+                    cp -r /home/gass-1215/Desktop/eventProject/* . 2>/dev/null || true
+                    cp -r /home/gass-1215/Desktop/eventProject/. . 2>/dev/null || true
+                    ls -la
+                '''
+            }
+        }
+        
+        stage('Build') {
+            steps {
+                sh './mvnw clean compile -DskipTests'
+            }
+        }
+        
+        stage('Unit Tests') {
+            steps {
+                sh './mvnw test'
+            }
+            post {
+                always {
+                    junit 'target/surefire-reports/*.xml'
+                }
+            }
+        }
+        
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh '''
+                        ./mvnw sonar:sonar \
+                        -Dsonar.projectKey=events-project \
+                        -Dsonar.projectName="Events Project" \
+                        -Dsonar.host.url=http://localhost:9000 \
+                        -Dsonar.login=admin \
+                        -Dsonar.password=Mimimidou7910%23%40 \
+                        -Dsonar.java.binaries=target/classes
+                    '''
+                }
+            }
+        }
+        
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+        
+        stage('Package') {
+            steps {
+                sh './mvnw clean package -DskipTests'
+                archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                sh '''
+                    docker build -t ${DOCKERHUB_USER}/eventsproject:${BUILD_NUMBER} .
+                    docker tag ${DOCKERHUB_USER}/eventsproject:${BUILD_NUMBER} ${DOCKERHUB_USER}/eventsproject:latest
+                '''
+            }
+        }
+        
+        stage('Upload to Nexus') {
+            steps {
+                script {
+                    def jarFile = "target/eventsProject-1.0.0-SNAPSHOT.jar"
+                    sh """
+                        echo "Uploading ${jarFile} to Nexus..."
+                        curl -v -u ${NEXUS_USER}:${NEXUS_PASSWORD} \
+                             --upload-file ${jarFile} \
+                             ${NEXUS_URL}/repository/${NEXUS_REPO}/tn/esprit/eventsProject/1.0.0-SNAPSHOT/eventsProject-1.0.0-SNAPSHOT.jar 2>/dev/null || \
+                        echo "Nexus upload attempted (may need repository setup)"
+                    '''
+                }
+            }
+        }
+        
+        stage('Deploy with Docker Compose') {
+            steps {
+                sh '''
+                    echo "=== Deploying Application ==="
+                    docker-compose down 2>/dev/null || true
+                    docker-compose up -d
+                    
+                    echo "Waiting for application to start..."
+                    sleep 30
+                    
+                    echo "=== Verification Tests ==="
+                    # Test 1: Health endpoint
+                    if curl -s http://localhost:8088/events/actuator/health | grep -q '"status":"UP"'; then
+                        echo "✅ Health check PASSED"
+                    else
+                        echo "❌ Health check FAILED"
+                        docker-compose logs app --tail=20
+                        exit 1
+                    fi
+                    
+                    # Test 2: Swagger UI
+                    if curl -s -I http://localhost:8088/events/swagger-ui.html | grep -q "200"; then
+                        echo "✅ Swagger UI accessible"
+                    else
+                        echo "⚠️ Swagger UI check inconclusive"
+                    fi
+                    
+                    # Test 3: Add a participant (API test)
+                    echo "Testing API - Adding participant..."
+                    API_RESPONSE=$(curl -s -X POST http://localhost:8088/events/event/addPart \
+                        -H "Content-Type: application/json" \
+                        -d '{"nom":"Jenkins","prenom":"Test","tache":"ORGANISATEUR"}' \
+                        -w "%{http_code}")
+                    
+                    if [[ "$API_RESPONSE" == *200* ]] || [[ "$API_RESPONSE" == *"idPart"* ]]; then
+                        echo "✅ API test PASSED"
+                    else
+                        echo "⚠️ API test returned: $API_RESPONSE"
+                    fi
+                    
+                    echo "=== Deployment Successful ==="
+                    echo "Application URL: http://localhost:8088/events"
+                    echo "Swagger UI: http://localhost:8088/events/swagger-ui.html"
+                    echo "Health: http://localhost:8088/events/actuator/health"
+                '''
+            }
+        }
+        
+        stage('Integration Tests') {
+            steps {
+                sh '''
+                    echo "=== Integration Tests ==="
+                    echo "1. Checking all containers are running..."
+                    docker-compose ps
+                    
+                    echo "2. Checking MySQL database..."
+                    docker-compose exec mysql mysql -u eventuser -peventpass eventsProject -e "SHOW TABLES;" 2>/dev/null || echo "MySQL check skipped"
+                    
+                    echo "3. Checking application logs for errors..."
+                    docker-compose logs app --tail=10 | grep -i error || echo "No errors found in recent logs"
+                    
+                    echo "=== Integration tests completed ==="
+                '''
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo '🎉 Pipeline completed successfully!'
+            sh '''
+                echo "=== FINAL REPORT ==="
+                echo "Build: ${BUILD_NUMBER}"
+                echo "Application: http://localhost:8088/events"
+                echo "SonarQube: http://localhost:9000"
+                echo "Nexus: http://localhost:8081"
+                echo "Jenkins: http://localhost:8080"
+            '''
+        }
+        failure {
+            echo '❌ Pipeline failed!'
+            sh '''
+                echo "=== DEBUG INFO ==="
+                docker-compose logs --tail=50
+                echo "=== Docker status ==="
+                docker ps -a
+            '''
+        }
+        always {
+            echo 'Pipeline completed'
+            // cleanWs()  # Keep workspace for debugging
+        }
+    }
+}

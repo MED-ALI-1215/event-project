@@ -1,0 +1,22 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'spring-boot-app'
+    metrics_path: '/events/actuator/prometheus'
+    static_configs:
+      - targets: ['172.17.0.1:8088']  # Docker gateway
+      - targets: ['host.docker.internal:8088']  # Docker internal host
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'events-project-application'
+
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']

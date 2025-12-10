@@ -1,0 +1,11 @@
+#!/bin/bash
+echo "Option 1: Use token (recommended)"
+echo "  - Go to SonarQube UI: http://localhost:9000"
+echo "  - Login: admin / Mimimidou7910#@"
+echo "  - Generate token in My Account → Security"
+echo "  - Use: -Dsonar.token=YOUR_GENERATED_TOKEN"
+echo ""
+echo "Option 2: Use login/password (deprecated)"
+echo "  - Escape special characters: # = %23, @ = %40"
+echo "  - So 'Mimimidou7910#@' becomes 'Mimimidou7910%23%40'"
+echo "  - Use: -Dsonar.login=admin -Dsonar.password=Mimimidou7910%23%40"

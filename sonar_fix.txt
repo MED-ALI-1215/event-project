@@ -1,0 +1,6 @@
+                        ./mvnw sonar:sonar \
+                        -Dsonar.projectKey=events-project \
+                        -Dsonar.projectName="Events Project" \
+                        -Dsonar.host.url=http://localhost:9000 \
+                        -Dsonar.token=sqa_922cb703ca888eee9de9f43e7d4d40a78ca91b7f \
+                        -Dsonar.java.binaries=target/classes
